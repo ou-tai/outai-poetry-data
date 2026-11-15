@@ -1,0 +1,75 @@
+name: Sync upstream chinese-poetry
+
+# 每天自动检查上游 chinese-poetry 是否有更新；有更新才同步并提交，
+# 无更新不产生提交；失败时保留上一份可用数据；支持手动触发。
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 每天 02:00 UTC（10:00 JST）
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout data repo
+        uses: actions/checkout@v4
+
+      - name: Clone upstream (shallow)
+        run: |
+          git clone --depth 1 --branch master https://github.com/chinese-poetry/chinese-poetry.git /tmp/upstream
+          echo "UPSTREAM_SHA=$(git -C /tmp/upstream rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_DATE=$(git -C /tmp/upstream log -1 --format=%cI)" >> "$GITHUB_ENV"
+
+      - name: Sync poem data directories
+        run: |
+          set -e
+          for d in "全唐诗" "宋词" "诗经" "楚辞" "元曲" "五代诗词" "纳兰性德" "论语" "四书五经" "蒙学" "幽梦影" "曹操诗集" "御定全唐詩" "水墨唐诗"; do
+            if [ -d "/tmp/upstream/$d" ]; then
+              mkdir -p "$d"
+              rsync -a --delete "/tmp/upstream/$d/" "$d/"
+            else
+              echo "upstream dir missing, skipped: $d"
+            fi
+          done
+          cp /tmp/upstream/LICENSE LICENSE
+          echo "sync done"
+
+      - name: Commit only when data changed
+        run: |
+          set -e
+          git config user.name "outai-poetry-sync"
+          git config user.email "outai-poetry-sync@users.noreply.github.com"
+          # 只把数据目录和 LICENSE 加入暂存区；README / 工作流 / SYNC_STATUS 不由同步覆盖
+          git add "全唐诗" "宋词" "诗经" "楚辞" "元曲" "五代诗词" "纳兰性德" "论语" "四书五经" "蒙学" "幽梦影" "曹操诗集" "御定全唐詩" "水墨唐诗" LICENSE
+          if git diff --cached --quiet; then
+            echo "上游无更新，不产生提交。"
+            echo "## 同步结果" >> "$GITHUB_STEP_SUMMARY"
+            echo "- 上游 SHA：$UPSTREAM_SHA" >> "$GITHUB_STEP_SUMMARY"
+            echo "- 上游最后提交：$UPSTREAM_DATE" >> "$GITHUB_STEP_SUMMARY"
+            echo "- 结论：无更新，未提交。" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cat > SYNC_STATUS.md <<EOF
+          # 同步状态
+
+          - 上游仓库：https://github.com/chinese-poetry/chinese-poetry
+          - 上游分支：master
+          - 上游 SHA：$UPSTREAM_SHA
+          - 上游最后提交时间：$UPSTREAM_DATE
+          - 最近同步时间（UTC）：$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          - 同步结果：已同步上游更新
+          - 同步方式：GitHub Actions 定时任务（每天 02:00 UTC）+ 手动触发
+          - 数据许可：MIT License，Copyright (c) 2016 JackeyGao，见 LICENSE
+          EOF
+          git add SYNC_STATUS.md
+          git commit -m "Sync upstream chinese-poetry @ ${UPSTREAM_SHA:0:12}"
+          git push
+          echo "## 同步结果" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 上游 SHA：$UPSTREAM_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 结论：已同步并提交。" >> "$GITHUB_STEP_SUMMARY"
